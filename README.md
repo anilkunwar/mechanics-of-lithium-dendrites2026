@@ -1,1 +1,1 @@
-# mechanics-of-lithium-dendrites2026
+# Mechanics of Lithium Dendrites
