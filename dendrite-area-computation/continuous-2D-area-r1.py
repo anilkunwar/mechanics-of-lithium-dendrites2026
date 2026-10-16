@@ -29,102 +29,44 @@ def get_valid_blocks(obj):
             blocks.append(obj)
     return blocks
 
-def calculate_continuous_area(
-    mesh,
-    eta_name,
-    electrode_end,
-    eta_low=0.0,
-    eta_high=1.0
-):
+def calculate_continuous_area(mesh, eta_name, electrode_end, eta_low=0.0, eta_high=1.0):
     if eta_name not in mesh.point_data:
-        raise KeyError(
-            f"no {eta_name}. now: {list(mesh.point_data.keys())}"
-        )
-
+        raise KeyError(f"no {eta_name}. now: {list(mesh.point_data.keys())}")
     if eta_high <= eta_low:
         raise ValueError("eta_high larger than eta_low")
 
-    # QUAD4
     quad_ids = np.flatnonzero(mesh.celltypes == 9)
-    
     if quad_ids.size == 0:
-        raise ValueError(
-            f"no QUAD4; now: {np.unique(mesh.celltypes)}"
-        )
+        raise ValueError(f"no QUAD4; now: {np.unique(mesh.celltypes)}")
     
     mesh = mesh.extract_cells(quad_ids)
-
-    # QUAD4-4 point
     node_ids = mesh.cells.reshape(-1, 5)[:, 1:]
 
     x_nodes = mesh.points[node_ids, 0]
     y_nodes = mesh.points[node_ids, 1]
-    eta_nodes = np.asarray(
-        mesh.point_data[eta_name],
-        dtype=float
-    )[node_ids]
+    eta_nodes = np.asarray(mesh.point_data[eta_name], dtype=float)[node_ids]
 
     gauss_points, gauss_weights = np.polynomial.legendre.leggauss(3)
-
     dendrite_area = 0.0
     electrolyte_area = 0.0
 
     for i, r in enumerate(gauss_points):
         for j, s in enumerate(gauss_points):
-
-            # QUAD4 shape function
-            N = 0.25 * np.array([
-                (1-r)*(1-s),
-                (1+r)*(1-s),
-                (1+r)*(1+s),
-                (1-r)*(1+s)
-            ])
-
-            dN_dr = 0.25 * np.array([
-                -(1-s),
-                 (1-s),
-                 (1+s),
-                -(1+s)
-            ])
-
-            dN_ds = 0.25 * np.array([
-                -(1-r),
-                -(1+r),
-                 (1+r),
-                 (1-r)
-            ])
+            N = 0.25 * np.array([(1-r)*(1-s), (1+r)*(1-s), (1+r)*(1+s), (1-r)*(1+s)])
+            dN_dr = 0.25 * np.array([-(1-s), (1-s), (1+s), -(1+s)])
+            dN_ds = 0.25 * np.array([-(1-r), -(1+r), (1+r), (1-r)])
 
             x_q = x_nodes @ N
             eta_q = eta_nodes @ N
-
-            q = np.clip(
-                (eta_q - eta_low) / (eta_high - eta_low),
-                0.01,
-                0.99
-            )
-
-            # calculate h
+            q = np.clip((eta_q - eta_low) / (eta_high - eta_low), 0.01, 0.99)
             h_q = q**3 * (6*q**2 - 15*q + 10)
 
-            # Jacobian
-            dx_dr = x_nodes @ dN_dr
-            dx_ds = x_nodes @ dN_ds
-            dy_dr = y_nodes @ dN_dr
-            dy_ds = y_nodes @ dN_ds
+            dx_dr, dx_ds = x_nodes @ dN_dr, x_nodes @ dN_ds
+            dy_dr, dy_ds = y_nodes @ dN_dr, y_nodes @ dN_ds
+            jacobian = np.abs(dx_dr * dy_ds - dx_ds * dy_dr)
+            dA = gauss_weights[i] * gauss_weights[j] * jacobian
 
-            jacobian = np.abs(
-                dx_dr * dy_ds - dx_ds * dy_dr
-            )
-
-            dA = (
-                gauss_weights[i]
-                * gauss_weights[j]
-                * jacobian
-            )
-
-            # IC
             region = x_q > electrode_end
-
             dendrite_area += np.sum(h_q[region] * dA[region])
             electrolyte_area += np.sum(dA[region])
 
@@ -138,31 +80,46 @@ st.title("🌲 Dendrite Continuous Area Calculator")
 
 st.sidebar.header("⚙️ Configuration")
 
-# 1. Default folder
-default_folder = os.path.join(os.getcwd(), "test_dataset")
+# 1. Robust Relative Path Resolution
+# This automatically finds the correct /mount/src/... path on Streamlit Cloud
+script_dir = os.path.dirname(os.path.abspath(__file__))
+default_folder = os.path.join(script_dir, "test_dataset")
+
 folder = st.sidebar.text_input("Folder Path", default_folder)
+normalized_path = os.path.normpath(folder)
 
-# 2. Discover base files and sequence files
 base_file = ""
-if os.path.isdir(folder):
-    all_e_files = glob.glob(os.path.join(folder, "*.e*"))
+base_file_names = []
 
-    # Recognise both:
-    # solid_change.e
-    # solid_change.e-s0001, solid_change.e-s0002, ...
+# 2. Robust Directory Checking (Using your suggested approach)
+if not os.path.exists(normalized_path):
+    st.sidebar.error(f"❌ Directory not found: {normalized_path}")
+    st.sidebar.info("💡 **Streamlit Cloud Tip:** Ensure `test_dataset` is committed to GitHub and NOT in your `.gitignore`.")
+elif not os.path.isdir(normalized_path):
+    st.sidebar.warning(f"⚠️ Path '{normalized_path}' exists but is not a directory.")
+else:
     discovered_bases = set()
+    try:
+        # List all files in the folder
+        for filename in os.listdir(normalized_path):
+            # Match base.e and base.e-s0001
+            match = re.match(r"^(.*\.e)(?:-s\d+)?$", filename)
+            if match:
+                file_full_path = os.path.join(normalized_path, filename)
+                if os.path.isfile(file_full_path):
+                    discovered_bases.add(match.group(1))
+    except PermissionError:
+        st.sidebar.warning(f"⚠️ Permission denied reading folder: {normalized_path}")
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ Error scanning folder {normalized_path}: {e}")
 
-    for path in all_e_files:
-        name = os.path.basename(path)
+    base_file_names = sorted(list(discovered_bases))
 
-        match = re.match(r"^(.*\.e)(?:-s\d+)?$", name)
-        if match:
-            discovered_bases.add(match.group(1))
-
-    base_file_names = sorted(discovered_bases)
-
-    if base_file_names:
-        # Try to default to solid_change.e if it exists
+    if not base_file_names:
+        st.sidebar.info(f"📁 Folder '{normalized_path}' contains no .e files.")
+        base_file = st.sidebar.text_input("Enter Base File Name manually", "solid_change.e")
+    else:
+        st.sidebar.success(f"📁 Found {len(base_file_names)} base file(s).")
         default_index = 0
         if "solid_change.e" in base_file_names:
             default_index = base_file_names.index("solid_change.e")
@@ -172,44 +129,25 @@ if os.path.isdir(folder):
             base_file_names,
             index=default_index,
         )
-    else:
-        st.sidebar.warning(
-            "No .e files or .e-sNNNN sequence files detected."
-        )
-        base_file = st.sidebar.text_input(
-            "Enter Base File Name manually",
-            "solid_change.e",
-        )
-else:
-    st.sidebar.error(f"Directory not found: {folder}")
-    base_file = st.sidebar.text_input(
-        "Enter Base File Name manually",
-        "solid_change.e",
-    )
 
-eta_name = st.sidebar.text_input(
-    "Phase-field Variable Name", "eta"
-)
-electrode_end = st.sidebar.number_input(
-    "Electrode End (x ≤ value)",
-    value=5.0,
-    format="%.2f",
-)
+eta_name = st.sidebar.text_input("Phase-field Variable Name", "eta")
+electrode_end = st.sidebar.number_input("Electrode End (x ≤ value)", value=5.0, format="%.2f")
 
 # ==========================================
 # Processing Logic
 # ==========================================
 if st.sidebar.button("🚀 Run Calculation"):
-    filename = os.path.join(folder, base_file)
+    if not base_file:
+        st.error("Please select or enter a base file name.")
+        st.stop()
 
-    # Find the base file and all matching sequence files.
+    filename = os.path.join(normalized_path, base_file)
+
+    # Find sequence files
     sequence_files = glob.glob(filename + "-s*")
     sequence_files = [
         f for f in sequence_files
-        if re.fullmatch(
-            re.escape(os.path.basename(filename)) + r"-s\d+",
-            os.path.basename(f),
-        )
+        if re.fullmatch(re.escape(os.path.basename(filename)) + r"-s\d+", os.path.basename(f))
     ]
     sequence_files.sort(key=get_sequence_number)
 
@@ -218,21 +156,16 @@ if st.sidebar.button("🚀 Run Calculation"):
     elif sequence_files:
         all_files = sequence_files
     else:
-        st.error(
-            f"No base file or sequence files found for: {filename}"
-        )
+        st.error(f"No base file or sequence files found for: {filename}")
         st.stop()
 
     st.write(f"Found **{len(all_files)}** file(s) to process.")
-    st.write([os.path.basename(f) for f in all_files])
-
+    
     results = []
     total_files = len(all_files)
-    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # Main Processing Loop
     for file_index, current_file in enumerate(all_files):
         status_text.text(f"⏳ Processing {file_index + 1}/{total_files}: {os.path.basename(current_file)}")
         
@@ -249,86 +182,39 @@ if st.sidebar.button("🚀 Run Calculation"):
             
             if isinstance(raw_mesh, pv.MultiBlock):
                 blocks = get_valid_blocks(raw_mesh)
-                if len(blocks) == 0:
-                    continue
-                elif len(blocks) == 1:
-                    mesh = blocks[0]
-                else:
-                    mesh = pv.MultiBlock(blocks).combine()
+                if len(blocks) == 0: continue
+                mesh = blocks[0] if len(blocks) == 1 else pv.MultiBlock(blocks).combine()
             else:
                 mesh = raw_mesh
             
             try:
                 dendrite_area, electrolyte_area = calculate_continuous_area(
-                    mesh=mesh,
-                    eta_name=eta_name,
-                    electrode_end=electrode_end,
-                    eta_low=0.0,
-                    eta_high=1.0
+                    mesh=mesh, eta_name=eta_name, electrode_end=electrode_end
                 )
-                
-                if electrolyte_area > 0:
-                    area_fraction = dendrite_area / electrolyte_area * 100.0
-                else:
-                    area_fraction = np.nan
-                    
-                results.append([
-                    file_index,
-                    os.path.basename(current_file),
-                    time,
-                    dendrite_area,
-                    area_fraction
-                ])
+                area_fraction = (dendrite_area / electrolyte_area * 100.0) if electrolyte_area > 0 else np.nan
+                results.append([file_index, os.path.basename(current_file), time, dendrite_area, area_fraction])
             except Exception as e:
-                st.warning(f"⚠️ Error processing {os.path.basename(current_file)} at time {time}: {e}")
+                st.warning(f"⚠️ Error at time {time}: {e}")
         
         progress_bar.progress((file_index + 1) / total_files)
         
     status_text.text("✅ Finished!")
     
-    # Display Results
     if results:
-        df = pd.DataFrame(
-            results,
-            columns=[
-                "File_Index",
-                "File",
-                "Time",
-                "Dendrite_Area",
-                "Area_Fraction_percent"
-            ]
-        )
-        
+        df = pd.DataFrame(results, columns=["File_Index", "File", "Time", "Dendrite_Area", "Area_Fraction_percent"])
         st.subheader("📊 Results Data")
         st.dataframe(df)
         
-        # Excel Download Button
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Results')
-        excel_data = excel_buffer.getvalue()
+            
+        st.download_button("📥 Download Excel File", excel_buffer.getvalue(), "dendrite_area_results.xlsx")
         
-        st.download_button(
-            label="📥 Download Excel File",
-            data=excel_data,
-            file_name="dendrite_area_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-        # Matplotlib Plot
         st.subheader("📈 Dendrite Area Fraction vs Time")
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(
-            df["Time"],
-            df["Area_Fraction_percent"],
-            marker="o",
-            markersize=2,
-            linewidth=1.5
-        )
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Dendrite Area Fraction (%)")
-        ax.set_title("Dendrite Area Fraction vs Time")
-        ax.grid(True)
+        ax.plot(df["Time"], df["Area_Fraction_percent"], marker="o", markersize=2, linewidth=1.5)
+        ax.set_xlabel("Time"); ax.set_ylabel("Dendrite Area Fraction (%)"); ax.grid(True)
         st.pyplot(fig)
     else:
-        st.warning("⚠️ No results were generated. Please check your files and parameters.")
+        st.warning("⚠️ No results were generated.")
