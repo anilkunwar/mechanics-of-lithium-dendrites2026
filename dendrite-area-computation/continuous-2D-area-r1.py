@@ -72,7 +72,7 @@ def calculate_continuous_area(
     for i, r in enumerate(gauss_points):
         for j, s in enumerate(gauss_points):
 
-            # QUAD4 shape function (Fixed missing '*' operators)
+            # QUAD4 shape function
             N = 0.25 * np.array([
                 (1-r)*(1-s),
                 (1+r)*(1-s),
@@ -103,7 +103,7 @@ def calculate_continuous_area(
                 0.99
             )
 
-            # calculate h (Fixed missing '**' operators)
+            # calculate h
             h_q = q**3 * (6*q**2 - 15*q + 10)
 
             # Jacobian
@@ -137,8 +137,28 @@ st.set_page_config(page_title="Dendrite Area Calculator", layout="wide")
 st.title("🌲 Dendrite Continuous Area Calculator")
 
 st.sidebar.header("⚙️ Configuration")
-folder = st.sidebar.text_input("Folder Path", "/Users/liyi/projects/tutorial_moose_simulations/solid/results/U3-ModelC-SL4by1")
-base_file = st.sidebar.text_input("Base File Name", "test1.e")
+
+# 1. Set default folder to 'test_dataset' in the current working directory
+default_folder = os.path.join(os.getcwd(), "test_dataset")
+os.makedirs(default_folder, exist_ok=True) # Creates the folder if it doesn't exist
+
+folder = st.sidebar.text_input("Folder Path", default_folder)
+
+# 2. Automatically find .e files in the specified folder
+if os.path.exists(folder):
+    # glob("*.e") finds base files, ignoring sequence files like "file.e-s0001"
+    e_files = glob.glob(os.path.join(folder, "*.e"))
+    base_file_names = sorted([os.path.basename(f) for f in e_files])
+    
+    if base_file_names:
+        base_file = st.sidebar.selectbox("Detected Base .e Files", base_file_names)
+    else:
+        st.sidebar.warning("⚠️ No base .e files found in the directory.")
+        base_file = st.sidebar.text_input("Enter Base File Name manually", "test1.e")
+else:
+    st.sidebar.error(f"❌ Directory not found: {folder}")
+    base_file = "test1.e"
+
 eta_name = st.sidebar.text_input("Phase-field Variable Name", "eta")
 electrode_end = st.sidebar.number_input("Electrode End (x <= value)", value=5.0, format="%.2f")
 
