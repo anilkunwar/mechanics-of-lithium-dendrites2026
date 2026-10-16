@@ -1,4 +1,4 @@
-# Postprocessor Tools
+# Postprocessor Tools (Apps)
 
 ## How to calculate the irregular dendrites area fraction using the continuous integral method?
 
